@@ -1,0 +1,25 @@
+{
+  "cls": {
+    "secretId": "AKIDxxxxxxxxxxxxxxxxxxxxxxxx",
+    "secretKey": "xxxxxxxxxxxxxxxxxxxxxxxx",
+    "region": "ap-singapore",
+    "endpoint": "cls.ap-singapore.tencentcloudapi.com"
+  },
+  "grafana": {
+    "url": "http://your-grafana-host:3000",
+    "user": "admin",
+    "password": "your-grafana-password",
+    "datasource": {
+      "name": "TencentCLS",
+      "type": "tencent-cls-grafana-datasource"
+    }
+  },
+  "migration": {
+    "keepDashboards": [
+      "<dashboard_name_1>",
+      "<dashboard_name_2>"
+    ],
+    "cleanupSameName": true,
+    "exportDir": "./exported_grafana_dashboards"
+  }
+}
