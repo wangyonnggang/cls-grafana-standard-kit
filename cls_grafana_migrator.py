@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CLS -> Grafana 可复用迁移工具
+Reusable CLS -> Grafana migration tool.
 
-能力:
-1) 从 CLS API 拉取仪表盘
-2) 按 tencent-cls-grafana-datasource 插件要求转换 query 结构
-3) 自动创建/更新 Grafana CLS 数据源
-4) 导入指定或全部仪表盘
-5) 导出转换后的 Grafana dashboard JSON 供复用
-6) 执行 ds/query 冒烟校验
+Capabilities:
+1) Pull dashboards from CLS API
+2) Convert target/query schema for tencent-cls-grafana-datasource
+3) Create or update Grafana CLS datasource automatically
+4) Import selected (or all matched) dashboards
+5) Export converted Grafana dashboard JSON for reuse
+6) Run ds/query smoke checks
 
-用法:
+Usage:
 python cls_grafana_migrator.py --config cls_migrator_config.json
 """
 
@@ -21,7 +21,6 @@ import hashlib
 import hmac
 import json
 import os
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -36,7 +35,9 @@ def load_json(path: str) -> dict:
 
 
 def save_json(path: str, obj: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dir_name = os.path.dirname(path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
@@ -200,7 +201,7 @@ def ensure_cls_datasource(gf: GrafanaClient, cfg: dict) -> dict:
         payload["uid"] = uid
         ret = gf.api("PUT", f"/api/datasources/uid/{uid}", payload)
         if ret.get("status") not in ["success", "OK"]:
-            raise RuntimeError(f"更新数据源失败: {ret}")
+            raise RuntimeError(f"Failed to update datasource: {ret}")
         detail = gf.api("GET", f"/api/datasources/uid/{uid}")
         return {"uid": uid, "type": ds_type, "name": ds_name, "detail": detail}
 
@@ -210,7 +211,7 @@ def ensure_cls_datasource(gf: GrafanaClient, cfg: dict) -> dict:
     elif ret.get("uid"):
         uid = ret["uid"]
     else:
-        raise RuntimeError(f"创建数据源失败: {ret}")
+        raise RuntimeError(f"Failed to create datasource: {ret}")
 
     detail = gf.api("GET", f"/api/datasources/uid/{uid}")
     return {"uid": uid, "type": ds_type, "name": ds_name, "detail": detail}
@@ -319,7 +320,6 @@ def convert_dashboard(src: dict, ds_ref: dict, cls_region: str) -> dict:
         "panels": panels,
     }
 
-    # 修复 time 兼容性
     if isinstance(dashboard["time"], list):
         if len(dashboard["time"]) >= 2:
             dashboard["time"] = {"from": str(dashboard["time"][0]), "to": str(dashboard["time"][1])}
@@ -341,7 +341,7 @@ def import_dashboards(
     keep_set = set(keep_names)
     selected = [d for d in cls_dashboards if d.get("DashboardName") in keep_set]
     if not selected:
-        raise RuntimeError("未匹配到任何目标仪表盘，请检查 keepDashboards 名称")
+        raise RuntimeError("No target dashboards matched. Check migration.keepDashboards names.")
 
     if cleanup_same_name:
         current = gf.search_dashboards(limit=2000)
@@ -415,8 +415,8 @@ def smoke_query(gf: GrafanaClient, ds_ref: dict, dashboards: List[Tuple[str, str
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="CLS -> Grafana 迁移工具")
-    parser.add_argument("--config", required=True, help="配置文件路径(JSON)")
+    parser = argparse.ArgumentParser(description="CLS -> Grafana migration tool")
+    parser.add_argument("--config", required=True, help="Path to JSON config file")
     args = parser.parse_args()
 
     cfg = load_json(args.config)
@@ -428,10 +428,10 @@ def main() -> int:
     ]
     for section, keys in required:
         if section not in cfg:
-            raise RuntimeError(f"缺少配置段: {section}")
+            raise RuntimeError(f"Missing config section: {section}")
         for k in keys:
             if k not in cfg[section]:
-                raise RuntimeError(f"缺少配置项: {section}.{k}")
+                raise RuntimeError(f"Missing config key: {section}.{k}")
 
     signer = Tc3Signer(
         cfg["cls"]["secretId"],
@@ -443,16 +443,16 @@ def main() -> int:
 
     gf = GrafanaClient(cfg["grafana"]["url"], cfg["grafana"]["user"], cfg["grafana"]["password"])
 
-    print("[1/5] 确保 Grafana CLS 数据源存在并配置正确...")
+    print("[1/5] Ensuring Grafana CLS datasource exists and is correctly configured...")
     ds = ensure_cls_datasource(gf, cfg)
     ds_ref = {"type": ds["type"], "uid": ds["uid"]}
-    print(f"  数据源 uid: {ds['uid']}")
+    print(f"  Datasource uid: {ds['uid']}")
 
-    print("[2/5] 从 CLS 拉取仪表盘...")
+    print("[2/5] Pulling dashboards from CLS...")
     dashboards = cls_client.list_dashboards()
-    print(f"  总数: {len(dashboards)}")
+    print(f"  Total dashboards: {len(dashboards)}")
 
-    print("[3/5] 转换并导入目标仪表盘...")
+    print("[3/5] Converting and importing target dashboards...")
     ok, fail = import_dashboards(
         gf=gf,
         cls_dashboards=dashboards,
@@ -462,21 +462,21 @@ def main() -> int:
         export_dir=cfg["migration"]["exportDir"],
         cleanup_same_name=bool(cfg["migration"].get("cleanupSameName", True)),
     )
-    print(f"  导入成功: {len(ok)}")
-    print(f"  导入失败: {len(fail)}")
+    print(f"  Imported successfully: {len(ok)}")
+    print(f"  Import failed: {len(fail)}")
 
-    print("[4/5] 冒烟校验 ds/query...")
+    print("[4/5] Running ds/query smoke checks...")
     smoke = smoke_query(gf, ds_ref, ok)
     for title, frames in smoke:
         mark = "OK" if frames > 0 else ("NO_TARGET" if frames == -1 else "EMPTY")
         print(f"  {title}: frames={frames} [{mark}]")
 
-    print("[5/5] 输出访问链接...")
+    print("[5/5] Dashboard URLs:")
     for title, uid in ok:
         print(f"  {title}: {cfg['grafana']['url'].rstrip('/')}/d/{uid}")
 
     if fail:
-        print("\n失败详情:")
+        print("\nFailure details:")
         for title, msg in fail:
             print(f"  - {title}: {msg}")
 
